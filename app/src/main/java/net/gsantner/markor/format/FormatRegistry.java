@@ -12,6 +12,7 @@ import android.text.InputFilter;
 import android.text.TextWatcher;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.annotation.StringRes;
 
 import net.gsantner.markor.R;
@@ -47,6 +48,7 @@ import net.gsantner.markor.frontend.textview.ListHandler;
 import net.gsantner.markor.frontend.textview.SyntaxHighlighterBase;
 import net.gsantner.markor.model.AppSettings;
 import net.gsantner.markor.model.Document;
+import net.gsantner.opoc.util.GsCollectionUtils;
 import net.gsantner.opoc.util.GsFileUtils;
 
 import java.io.File;
@@ -79,30 +81,112 @@ public class FormatRegistry {
     // File extensions that are known not to be supported by Markor
     private static final List<String> EXTERNAL_FILE_EXTENSIONS = Collections.singletonList(".pdf");
 
+    // Per-format component factories. Highlighters and action buttons depend on a live Context /
+    // AppSettings / Document, so unlike the (stateless, shared) converters they cannot be cached
+    // and are created lazily through these factories when a format is selected.
+    public interface HighlighterFactory {
+        SyntaxHighlighterBase create(AppSettings appSettings, Document document);
+    }
+
+    public interface ActionsFactory {
+        ActionButtonBase create(Context context, Document document);
+    }
+
+    public interface AutoFormatFactory {
+        AutoFormat create();
+    }
+
+    /**
+     * Editor auto-formatting bundle for a format. The {@link InputFilter} reacts while the user
+     * types (e.g. continuing a list on Enter) and the {@link TextWatcher} reacts to text changes
+     * (e.g. renumbering ordered lists). Both are optional and are kept together because, for the
+     * list-based formats, they are derived from the same set of prefix patterns.
+     */
+    public static final class AutoFormat {
+        public final @Nullable InputFilter inputFilter;
+        public final @Nullable TextWatcher textWatcher;
+
+        public AutoFormat(final @Nullable InputFilter inputFilter, final @Nullable TextWatcher textWatcher) {
+            this.inputFilter = inputFilter;
+            this.textWatcher = textWatcher;
+        }
+    }
+
+    // Common auto-format wiring shared by the list-aware formats (Markdown, CSV, AsciiDoc,
+    // Plaintext, Wikitext, Orgmode): an AutoTextFormatter input filter plus a ListHandler text
+    // watcher, both built from the same prefix patterns.
+    private static AutoFormatFactory patternAutoFormat(final AutoTextFormatter.FormatPatterns patterns) {
+        return () -> new AutoFormat(new AutoTextFormatter(patterns), new ListHandler(patterns));
+    }
+
     public static class Format {
         public final @StringRes int format, name;
         public final String defaultExtensionWithDot;
         public final TextConverterBase converter;
+        // Null for the FORMAT_UNKNOWN sentinel, which only participates in format detection.
+        public final @Nullable HighlighterFactory highlighterFactory;
+        public final @Nullable ActionsFactory actionsFactory;
+        // Null when a format has no editor auto-formatting (e.g. KeyValue, EmbedBinary).
+        public final @Nullable AutoFormatFactory autoFormatFactory;
 
-        public Format(@StringRes final int a_format, @StringRes final int a_name, final String a_defaultFileExtension, final TextConverterBase a_converter) {
+        public Format(@StringRes final int a_format, @StringRes final int a_name, final String a_defaultFileExtension, final TextConverterBase a_converter,
+                      final @Nullable HighlighterFactory a_highlighterFactory, final @Nullable ActionsFactory a_actionsFactory, final @Nullable AutoFormatFactory a_autoFormatFactory) {
             format = a_format;
             name = a_name;
             defaultExtensionWithDot = a_defaultFileExtension;
             converter = a_converter;
+            highlighterFactory = a_highlighterFactory;
+            actionsFactory = a_actionsFactory;
+            autoFormatFactory = a_autoFormatFactory;
+        }
+
+        // Metadata-only descriptor used for detection-only entries such as FORMAT_UNKNOWN.
+        public Format(@StringRes final int a_format, @StringRes final int a_name, final String a_defaultFileExtension, final TextConverterBase a_converter) {
+            this(a_format, a_name, a_defaultFileExtension, a_converter, null, null, null);
         }
     }
 
-    // Order here is used to **determine** format by it's file extension and/or content heading
+    // Order here is used to **determine** format by it's file extension and/or content heading.
+    // Each entry also carries the component factories used when the format is opened in the editor,
+    // so adding a format or changing the detection order only touches this single table.
     public static final List<Format> FORMATS = Arrays.asList(
-            new Format(FormatRegistry.FORMAT_MARKDOWN, R.string.markdown, ".md", CONVERTER_MARKDOWN),
-            new Format(FormatRegistry.FORMAT_TODOTXT, R.string.todo_txt, ".todo.txt", CONVERTER_TODOTXT),
-            new Format(FormatRegistry.FORMAT_CSV, R.string.csv, ".csv", CONVERTER_CSV),
-            new Format(FormatRegistry.FORMAT_WIKITEXT, R.string.wikitext, ".txt", CONVERTER_WIKITEXT),
-            new Format(FormatRegistry.FORMAT_KEYVALUE, R.string.key_value, ".json", CONVERTER_KEYVALUE),
-            new Format(FormatRegistry.FORMAT_ASCIIDOC, R.string.asciidoc, ".adoc", CONVERTER_ASCIIDOC),
-            new Format(FormatRegistry.FORMAT_ORGMODE, R.string.orgmode, ".org", CONVERTER_ORGMODE),
-            new Format(FormatRegistry.FORMAT_EMBEDBINARY, R.string.embed_binary, ".jpg", CONVERTER_EMBEDBINARY),
-            new Format(FormatRegistry.FORMAT_PLAIN, R.string.plaintext, ".txt", CONVERTER_PLAINTEXT),
+            new Format(FormatRegistry.FORMAT_MARKDOWN, R.string.markdown, ".md", CONVERTER_MARKDOWN,
+                    (as, doc) -> new MarkdownSyntaxHighlighter(as),
+                    (ctx, doc) -> new MarkdownActionButtons(ctx, doc),
+                    patternAutoFormat(MarkdownReplacePatternGenerator.formatPatterns)),
+            new Format(FormatRegistry.FORMAT_TODOTXT, R.string.todo_txt, ".todo.txt", CONVERTER_TODOTXT,
+                    (as, doc) -> new TodoTxtSyntaxHighlighter(as),
+                    (ctx, doc) -> new TodoTxtActionButtons(ctx, doc),
+                    () -> new AutoFormat(new TodoTxtAutoTextFormatter(), null)),
+            new Format(FormatRegistry.FORMAT_CSV, R.string.csv, ".csv", CONVERTER_CSV,
+                    (as, doc) -> new CsvSyntaxHighlighter(as),
+                    // TODO k3b ???? CSV currently reuses the plaintext action buttons.
+                    (ctx, doc) -> new PlaintextActionButtons(ctx, doc),
+                    patternAutoFormat(MarkdownReplacePatternGenerator.formatPatterns)),
+            new Format(FormatRegistry.FORMAT_WIKITEXT, R.string.wikitext, ".txt", CONVERTER_WIKITEXT,
+                    (as, doc) -> new WikitextSyntaxHighlighter(as),
+                    (ctx, doc) -> new WikitextActionButtons(ctx, doc),
+                    patternAutoFormat(WikitextReplacePatternGenerator.formatPatterns)),
+            new Format(FormatRegistry.FORMAT_KEYVALUE, R.string.key_value, ".json", CONVERTER_KEYVALUE,
+                    (as, doc) -> new KeyValueSyntaxHighlighter(as),
+                    (ctx, doc) -> new PlaintextActionButtons(ctx, doc),
+                    null),
+            new Format(FormatRegistry.FORMAT_ASCIIDOC, R.string.asciidoc, ".adoc", CONVERTER_ASCIIDOC,
+                    (as, doc) -> new AsciidocSyntaxHighlighter(as),
+                    (ctx, doc) -> new AsciidocActionButtons(ctx, doc),
+                    patternAutoFormat(MarkdownReplacePatternGenerator.formatPatterns)),
+            new Format(FormatRegistry.FORMAT_ORGMODE, R.string.orgmode, ".org", CONVERTER_ORGMODE,
+                    (as, doc) -> new OrgmodeSyntaxHighlighter(as),
+                    (ctx, doc) -> new OrgmodeActionButtons(ctx, doc),
+                    patternAutoFormat(OrgmodeReplacePatternGenerator.formatPatterns)),
+            new Format(FormatRegistry.FORMAT_EMBEDBINARY, R.string.embed_binary, ".jpg", CONVERTER_EMBEDBINARY,
+                    (as, doc) -> new PlaintextSyntaxHighlighter(as),
+                    (ctx, doc) -> new PlaintextActionButtons(ctx, doc),
+                    null),
+            new Format(FormatRegistry.FORMAT_PLAIN, R.string.plaintext, ".txt", CONVERTER_PLAINTEXT,
+                    (as, doc) -> new PlaintextSyntaxHighlighter(as, doc.extension),
+                    (ctx, doc) -> new PlaintextActionButtons(ctx, doc),
+                    patternAutoFormat(MarkdownReplacePatternGenerator.formatPatterns)),
             new Format(FormatRegistry.FORMAT_UNKNOWN, R.string.none, "", null)
     );
 
@@ -125,85 +209,40 @@ public class FormatRegistry {
         void applyTextFormat(int textFormatId);
     }
 
-    public static FormatRegistry getFormat(int formatId, @NonNull final Context context, final Document document) {
-        final FormatRegistry format = new FormatRegistry();
-        final AppSettings appSettings = AppSettings.get(context);
+    /**
+     * Look up the {@link Format} descriptor whose id equals {@code formatId}, or {@code null} when
+     * no entry matches. The result is the raw table entry; {@link #resolveFormat(int)} additionally
+     * applies the Markdown fallback used when opening a document.
+     */
+    public static @Nullable Format getFormatById(final int formatId) {
+        return GsCollectionUtils.selectFirst(FORMATS, f -> f.format == formatId);
+    }
 
-        switch (formatId) {
-            case FORMAT_CSV: {
-                format._converter = CONVERTER_CSV;
-                format._highlighter = new CsvSyntaxHighlighter(appSettings);
-
-                // TODO k3b ????
-                format._textActions = new PlaintextActionButtons(context, document);
-                format._autoFormatInputFilter = new AutoTextFormatter(MarkdownReplacePatternGenerator.formatPatterns);
-                format._autoFormatTextWatcher = new ListHandler(MarkdownReplacePatternGenerator.formatPatterns);
-                break;
-            }
-            case FORMAT_PLAIN: {
-                format._converter = CONVERTER_PLAINTEXT;
-                format._highlighter = new PlaintextSyntaxHighlighter(appSettings, document.extension);
-                // Should implement code action buttons for PlaintextActionButtons
-                format._textActions = new PlaintextActionButtons(context, document);
-                format._autoFormatInputFilter = new AutoTextFormatter(MarkdownReplacePatternGenerator.formatPatterns);
-                format._autoFormatTextWatcher = new ListHandler(MarkdownReplacePatternGenerator.formatPatterns);
-                break;
-            }
-            case FORMAT_ASCIIDOC: {
-                format._converter = CONVERTER_ASCIIDOC;
-                format._highlighter = new AsciidocSyntaxHighlighter(appSettings);
-                format._textActions = new AsciidocActionButtons(context, document);
-                format._autoFormatInputFilter = new AutoTextFormatter(MarkdownReplacePatternGenerator.formatPatterns);
-                format._autoFormatTextWatcher = new ListHandler(MarkdownReplacePatternGenerator.formatPatterns);
-                break;
-            }
-            case FORMAT_TODOTXT: {
-                format._converter = CONVERTER_TODOTXT;
-                format._highlighter = new TodoTxtSyntaxHighlighter(appSettings);
-                format._textActions = new TodoTxtActionButtons(context, document);
-                format._autoFormatInputFilter = new TodoTxtAutoTextFormatter();
-                break;
-            }
-            case FORMAT_KEYVALUE: {
-                format._converter = CONVERTER_KEYVALUE;
-                format._highlighter = new KeyValueSyntaxHighlighter(appSettings);
-                format._textActions = new PlaintextActionButtons(context, document);
-                break;
-            }
-            case FORMAT_WIKITEXT: {
-                format._converter = CONVERTER_WIKITEXT;
-                format._highlighter = new WikitextSyntaxHighlighter(appSettings);
-                format._textActions = new WikitextActionButtons(context, document);
-                format._autoFormatInputFilter = new AutoTextFormatter(WikitextReplacePatternGenerator.formatPatterns);
-                format._autoFormatTextWatcher = new ListHandler(WikitextReplacePatternGenerator.formatPatterns);
-                break;
-            }
-            case FORMAT_EMBEDBINARY: {
-                format._converter = CONVERTER_EMBEDBINARY;
-                format._highlighter = new PlaintextSyntaxHighlighter(appSettings);
-                format._textActions = new PlaintextActionButtons(context, document);
-                break;
-            }
-            case FORMAT_ORGMODE: {
-                format._converter = CONVERTER_ORGMODE;
-                format._highlighter = new OrgmodeSyntaxHighlighter(appSettings);
-                format._textActions = new OrgmodeActionButtons(context, document);
-                format._autoFormatInputFilter = new AutoTextFormatter(OrgmodeReplacePatternGenerator.formatPatterns);
-                format._autoFormatTextWatcher = new ListHandler(OrgmodeReplacePatternGenerator.formatPatterns);
-                break;
-            }
-            default:
-            case FORMAT_MARKDOWN: {
-                formatId = FORMAT_MARKDOWN;
-                format._converter = CONVERTER_MARKDOWN;
-                format._highlighter = new MarkdownSyntaxHighlighter(appSettings);
-                format._textActions = new MarkdownActionButtons(context, document);
-                format._autoFormatInputFilter = new AutoTextFormatter(MarkdownReplacePatternGenerator.formatPatterns);
-                format._autoFormatTextWatcher = new ListHandler(MarkdownReplacePatternGenerator.formatPatterns);
-                break;
-            }
+    /**
+     * Resolve a format id to the descriptor that should drive the editor. Unknown ids, the
+     * FORMAT_UNKNOWN sentinel, and detection-only entries (no component factories) all fall back to
+     * Markdown, mirroring the previous {@code default} switch branch. Never returns {@code null}.
+     */
+    public static @NonNull Format resolveFormat(final int formatId) {
+        final Format format = getFormatById(formatId);
+        if (format != null && format.highlighterFactory != null) {
+            return format;
         }
-        format._formatId = formatId;
+        return getFormatById(FORMAT_MARKDOWN);
+    }
+
+    public static FormatRegistry getFormat(final int formatId, @NonNull final Context context, final Document document) {
+        final AppSettings appSettings = AppSettings.get(context);
+        final Format fmt = resolveFormat(formatId);
+        final AutoFormat autoFormat = fmt.autoFormatFactory != null ? fmt.autoFormatFactory.create() : null;
+
+        final FormatRegistry format = new FormatRegistry();
+        format._formatId = fmt.format;
+        format._converter = fmt.converter;
+        format._highlighter = fmt.highlighterFactory.create(appSettings, document);
+        format._textActions = fmt.actionsFactory.create(context, document);
+        format._autoFormatInputFilter = autoFormat != null ? autoFormat.inputFilter : null;
+        format._autoFormatTextWatcher = autoFormat != null ? autoFormat.textWatcher : null;
         return format;
     }
 
