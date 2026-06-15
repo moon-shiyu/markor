@@ -15,7 +15,6 @@ import android.content.Intent;
 import android.content.res.ColorStateList;
 import android.graphics.Typeface;
 import android.os.Bundle;
-import android.text.TextUtils;
 import android.util.Log;
 import android.util.Pair;
 import android.util.Patterns;
@@ -57,11 +56,7 @@ import net.gsantner.opoc.wrapper.GsCallback;
 import net.gsantner.opoc.wrapper.GsTextWatcherAdapter;
 
 import java.io.File;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
 import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 public class DocumentShareIntoFragment extends MarkorBaseFragment {
     public static final String FRAGMENT_TAG = "DocumentShareIntoFragment";
@@ -332,25 +327,12 @@ public class DocumentShareIntoFragment extends MarkorBaseFragment {
             activity.finish();
         }
 
-        private static Pair<String, File> getLinePath(final CharSequence line) {
-            final String trimmed = line.toString().trim();
-            final int si = trimmed.lastIndexOf(" ");
-            final String path = si == -1 ? trimmed : trimmed.substring(si + 1);
-            final File file = new File(path);
-            if (file.exists()) {
-                final String title = si == -1 ? file.getName() : trimmed.substring(0, si);
-                return Pair.create(title, file);
-            }
-            return null;
-        }
-
         // Title and link or null
         private static Pair<String, String> getLineLink(final CharSequence line) {
-            final String trimmed = line.toString().trim();
-            final int si = trimmed.lastIndexOf(" ");
-            final String path = si == -1 ? trimmed : trimmed.substring(si + 1);
+            final String[] tt = ShareIntoUtils.splitLastSpace(line);
+            final String path = tt[1];
             if (Patterns.WEB_URL.matcher(path).matches()) {
-                final String title = si == -1 ? getLinkTitle(path) : trimmed.substring(0, si);
+                final String title = tt[0] != null ? tt[0] : getLinkTitle(path);
                 return Pair.create(title, path);
             }
             return null;
@@ -361,7 +343,7 @@ public class DocumentShareIntoFragment extends MarkorBaseFragment {
 
             GsTextUtils.forEachline(text, (li, start, end) -> {
                 final CharSequence line = text.subSequence(start, end);
-                if (getLinePath(line) != null || getLineLink(line) != null) {
+                if (ShareIntoUtils.getLinePath(line) != null || getLineLink(line) != null) {
                     hasLinks[0] = true;
                     return false;
                 }
@@ -392,10 +374,10 @@ public class DocumentShareIntoFragment extends MarkorBaseFragment {
                     final String lineText = text.subSequence(start, end).toString().trim();
 
                     final String title, path;
-                    final Pair<String, File> linePath = getLinePath(lineText);
+                    final ShareIntoUtils.Link linePath = ShareIntoUtils.getLinePath(lineText);
                     if (linePath != null) {
-                        title = linePath.first;
-                        path = GsFileUtils.relativePath(src, linePath.second);
+                        title = linePath.title;
+                        path = GsFileUtils.relativePath(src, linePath.file);
                     } else {
                         final Pair<String, String> lineLink = getLineLink(lineText);
                         if (lineLink != null) {
@@ -422,30 +404,18 @@ public class DocumentShareIntoFragment extends MarkorBaseFragment {
 
             formatted = formatShare(formatted);
 
-            if (format == FormatRegistry.FORMAT_TODOTXT) {
-                formatted = TodoTxtTask.getToday() + " " + formatted.replaceAll("\\n+", " ");
-            } else {
-                formatted = "\n" + formatted;
-            }
+            formatted = ShareIntoUtils.wrapForFormat(formatted, format == FormatRegistry.FORMAT_TODOTXT, TodoTxtTask.getToday());
 
             return formatted;
         }
 
         private String formatShare(final String shared) {
-            final Context context = getContext();
-            final String prefix = _appSettings.getShareIntoPrefix();
-            final List<String> parts = new ArrayList<>(Arrays.asList(prefix.split(Pattern.quote(TEXT_TOKEN))));
-
-            // Interpolate parts
-            final long time = System.currentTimeMillis();
-            for (int i = 0; i < parts.size(); i++) {
-                parts.set(i, _cu.formatDateTime(context, parts.get(i), time));
-            }
-
-            // Put the shared text in the right place
-            parts.add(parts.isEmpty() ? 0 : 1, shared);
-
-            return TextUtils.join("", parts);
+            return ShareIntoUtils.interpolateTemplate(
+                    _appSettings.getShareIntoPrefix(),
+                    shared,
+                    TEXT_TOKEN,
+                    (part, time) -> _cu.formatDateTime(getContext(), part, time),
+                    System.currentTimeMillis());
         }
 
         private boolean isValidTargetFolder(final @Nullable GsFileBrowserOptions.Options dopt, final @Nullable File folder) {
@@ -638,28 +608,11 @@ public class DocumentShareIntoFragment extends MarkorBaseFragment {
         }
     }
 
-    private static String sanitize(final String link) {
-        String dropGetParams = "utm_|source|si|__mk_|ref|sprefix|crid|partner|promo|ad_sub|gclid|fbclid|msclkid|dib";
-        if (link.contains("amazon.")) {
-            dropGetParams += "|qid|sr";
-        }
-
-        return link.replaceAll("(?m)(?<=&|\\?)(" + dropGetParams + ").*?(&|$|\\s|\\))", "");
-    }
-
     private static String extractShareText(final Intent intent) {
-        String title = intent.getStringExtra(Intent.EXTRA_SUBJECT);
-        if (title != null) {
-            title = title.trim() + " ";
-        }
-
-        String link = intent.getStringExtra(Intent.EXTRA_TEXT);
-        link = link != null ? link.trim() : "";
-
-        if (Patterns.WEB_URL.matcher(link).matches()) {
-            link = (title != null ? title : "") + sanitize(link);
-        }
-
-        return link;
+        final String subject = intent.getStringExtra(Intent.EXTRA_SUBJECT);
+        final String text = intent.getStringExtra(Intent.EXTRA_TEXT);
+        final String trimmed = text != null ? text.trim() : "";
+        final boolean isWebUrl = Patterns.WEB_URL.matcher(trimmed).matches();
+        return ShareIntoUtils.composeShareText(subject, text, isWebUrl);
     }
 }

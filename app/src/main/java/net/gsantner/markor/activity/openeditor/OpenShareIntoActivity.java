@@ -18,9 +18,7 @@ public class OpenShareIntoActivity extends OpenEditorActivity {
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        final Intent openShare = new Intent(this, OpenFromShortcutOrWidgetActivity.class)
-                .setAction(Intent.ACTION_SEND)
-                .putExtra(Intent.EXTRA_TEXT, "");
+        final Intent openShare = OpenFromShortcutOrWidgetActivity.shareTextIntent(this);
 
         _cu.animateToActivity(this, openShare, true, 1);
     }
