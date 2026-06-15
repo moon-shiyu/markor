@@ -17,7 +17,6 @@ import android.graphics.Typeface;
 import android.os.Bundle;
 import android.text.TextUtils;
 import android.util.Log;
-import android.util.Pair;
 import android.util.Patterns;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -41,6 +40,7 @@ import net.gsantner.markor.format.FormatRegistry;
 import net.gsantner.markor.format.plaintext.PlaintextSyntaxHighlighter;
 import net.gsantner.markor.format.todotxt.TodoTxtTask;
 import net.gsantner.markor.frontend.AttachLinkOrFileDialog;
+import net.gsantner.markor.util.ShareContentParser;
 import net.gsantner.markor.frontend.MarkorDialogFactory;
 import net.gsantner.markor.frontend.NewFileDialog;
 import net.gsantner.markor.frontend.filebrowser.MarkorFileBrowserFactory;
@@ -60,10 +60,13 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class DocumentShareIntoFragment extends MarkorBaseFragment {
+    static {
+        ShareContentParser.init(Patterns.WEB_URL);
+    }
+
     public static final String FRAGMENT_TAG = "DocumentShareIntoFragment";
     public static final String TEXT_TOKEN = "{{text}}";
 
@@ -71,7 +74,9 @@ public class DocumentShareIntoFragment extends MarkorBaseFragment {
 
     public static DocumentShareIntoFragment newInstance(final Intent intent, final Context context) {
         final DocumentShareIntoFragment f = new DocumentShareIntoFragment();
-        f.sharedText = extractShareText(intent);
+        f.sharedText = ShareContentParser.extractShareText(
+                intent.getStringExtra(Intent.EXTRA_SUBJECT),
+                intent.getStringExtra(Intent.EXTRA_TEXT));
         f.attachment = MarkorContextUtils.getIntentFile(intent, context);
         return f;
     }
@@ -222,10 +227,10 @@ public class DocumentShareIntoFragment extends MarkorBaseFragment {
             if (_editor != null && _linkCheckBox != null) {
                 doUpdatePreferences();
                 if (attachment == null) {
-                    _linkCheckBox.setVisibility(hasLinks(_editor.getText()) ? View.VISIBLE : View.GONE);
+                    _linkCheckBox.setVisibility(ShareContentParser.hasLinks(_editor.getText()) ? View.VISIBLE : View.GONE);
                     _linkCheckBox.setChecked(_appSettings.getFormatShareAsLink());
                     _editor.addTextChangedListener(GsTextWatcherAdapter.on((ctext, arg2, arg3, arg4) ->
-                            _linkCheckBox.setVisibility(hasLinks(_editor.getText()) ? View.VISIBLE : View.GONE)));
+                            _linkCheckBox.setVisibility(ShareContentParser.hasLinks(_editor.getText()) ? View.VISIBLE : View.GONE)));
                 } else {
                     _linkCheckBox.setVisibility(View.VISIBLE);
                     _linkCheckBox.setChecked(true);
@@ -332,53 +337,6 @@ public class DocumentShareIntoFragment extends MarkorBaseFragment {
             activity.finish();
         }
 
-        private static Pair<String, File> getLinePath(final CharSequence line) {
-            final String trimmed = line.toString().trim();
-            final int si = trimmed.lastIndexOf(" ");
-            final String path = si == -1 ? trimmed : trimmed.substring(si + 1);
-            final File file = new File(path);
-            if (file.exists()) {
-                final String title = si == -1 ? file.getName() : trimmed.substring(0, si);
-                return Pair.create(title, file);
-            }
-            return null;
-        }
-
-        // Title and link or null
-        private static Pair<String, String> getLineLink(final CharSequence line) {
-            final String trimmed = line.toString().trim();
-            final int si = trimmed.lastIndexOf(" ");
-            final String path = si == -1 ? trimmed : trimmed.substring(si + 1);
-            if (Patterns.WEB_URL.matcher(path).matches()) {
-                final String title = si == -1 ? getLinkTitle(path) : trimmed.substring(0, si);
-                return Pair.create(title, path);
-            }
-            return null;
-        }
-
-        private static boolean hasLinks(final CharSequence text) {
-            final boolean[] hasLinks = {false};
-
-            GsTextUtils.forEachline(text, (li, start, end) -> {
-                final CharSequence line = text.subSequence(start, end);
-                if (getLinePath(line) != null || getLineLink(line) != null) {
-                    hasLinks[0] = true;
-                    return false;
-                }
-                return true;
-            });
-
-            return hasLinks[0];
-        }
-
-        public static String getLinkTitle(final String link) {
-            final Matcher m = Patterns.WEB_URL.matcher(link);
-            if (m.matches()) {
-                final String title = m.group(4);
-                return (title != null && title.endsWith(".")) ? title.substring(0, title.length() - 1) : title;
-            }
-            return "";
-        }
 
         private String getFormatted(final boolean asLink, final File src, final int format) {
             final String text = _editor.getText().toString();
@@ -392,15 +350,15 @@ public class DocumentShareIntoFragment extends MarkorBaseFragment {
                     final String lineText = text.subSequence(start, end).toString().trim();
 
                     final String title, path;
-                    final Pair<String, File> linePath = getLinePath(lineText);
+                    final String[] linePath = ShareContentParser.getLinePath(lineText);
                     if (linePath != null) {
-                        title = linePath.first;
-                        path = GsFileUtils.relativePath(src, linePath.second);
+                        title = linePath[0];
+                        path = GsFileUtils.relativePath(src, new File(linePath[1]));
                     } else {
-                        final Pair<String, String> lineLink = getLineLink(lineText);
+                        final String[] lineLink = ShareContentParser.getLineLink(lineText);
                         if (lineLink != null) {
-                            title = lineLink.first;
-                            path = lineLink.second;
+                            title = lineLink[0];
+                            path = lineLink[1];
                         } else {
                             title = lineText;
                             path = null;
@@ -638,28 +596,4 @@ public class DocumentShareIntoFragment extends MarkorBaseFragment {
         }
     }
 
-    private static String sanitize(final String link) {
-        String dropGetParams = "utm_|source|si|__mk_|ref|sprefix|crid|partner|promo|ad_sub|gclid|fbclid|msclkid|dib";
-        if (link.contains("amazon.")) {
-            dropGetParams += "|qid|sr";
-        }
-
-        return link.replaceAll("(?m)(?<=&|\\?)(" + dropGetParams + ").*?(&|$|\\s|\\))", "");
-    }
-
-    private static String extractShareText(final Intent intent) {
-        String title = intent.getStringExtra(Intent.EXTRA_SUBJECT);
-        if (title != null) {
-            title = title.trim() + " ";
-        }
-
-        String link = intent.getStringExtra(Intent.EXTRA_TEXT);
-        link = link != null ? link.trim() : "";
-
-        if (Patterns.WEB_URL.matcher(link).matches()) {
-            link = (title != null ? title : "") + sanitize(link);
-        }
-
-        return link;
-    }
 }
