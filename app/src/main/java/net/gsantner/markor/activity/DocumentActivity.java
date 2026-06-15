@@ -31,7 +31,6 @@ import net.gsantner.markor.frontend.textview.TextViewUtils;
 import net.gsantner.markor.model.AppSettings;
 import net.gsantner.markor.model.Document;
 import net.gsantner.markor.util.MarkorContextUtils;
-import net.gsantner.opoc.format.GsTextUtils;
 import net.gsantner.opoc.frontend.base.GsFragmentBase;
 import net.gsantner.opoc.util.GsContextUtils;
 import net.gsantner.opoc.util.GsFileUtils;
@@ -183,51 +182,53 @@ public class DocumentActivity extends MarkorBaseActivity {
         if (file == null || !_cu.canWriteFile(this, file, false, true)) {
             showNotSupportedMessage();
         } else {
-            Integer startLine = null;
             // Open in editor/viewer
             final Document doc = new Document(file);
-            if (intent.hasExtra(Document.EXTRA_FILE_LINE_NUMBER)) {
-                startLine = intent.getIntExtra(Document.EXTRA_FILE_LINE_NUMBER, -1);
-            } else if (intentData != null) {
-                final String line = intentData.getQueryParameter("line");
-                if (line != null) {
-                    startLine = GsTextUtils.tryParseInt(line, -1);
-                }
-            }
+
+            // Resolve launch parameters (which line, start in preview)
+            // -----------------------------------------------------------------------
+            final Integer startLine = DocumentLaunchParams.resolveStartLine(
+                    intent.hasExtra(Document.EXTRA_FILE_LINE_NUMBER),
+                    intent.getIntExtra(Document.EXTRA_FILE_LINE_NUMBER, -1),
+                    intentData != null ? intentData.getQueryParameter("line") : null);
 
             // Start in a specific mode if required. Otherwise let the fragment decide
-            Boolean startInPreview = null;
-            if (intent.getBooleanExtra(Document.EXTRA_DO_PREVIEW, false) ||
-                    file.getName().startsWith("index.")
-            ) {
-                startInPreview = true;
-            }
+            final Boolean startInPreview = DocumentLaunchParams.resolveStartInPreview(
+                    intent.getBooleanExtra(Document.EXTRA_DO_PREVIEW, false),
+                    file.getName());
 
-            // Three cases
-            // 1. We have an editor open and it is the same document - show the requested line
-            // 2. We have an editor open and it is a different document - open the new document
-            // 3. We do not have a current fragment - open the document here
-            final GsFragmentBase<?, ?> frag = getCurrentVisibleFragment();
-            if (frag != null) {
-                if (frag instanceof DocumentEditAndViewFragment) {
-                    final DocumentEditAndViewFragment editFrag = (DocumentEditAndViewFragment) frag;
-                    if (editFrag.getDocument().path.equals(doc.path)) {
-                        if (startLine != null) {
-                            // Same document requested, show the requested line
-                            TextViewUtils.selectLines(editFrag.getEditor(), startLine);
-                        }
-                    } else {
-                        // Current document is different - launch the new document
-                        launch(this, file, startInPreview, startLine);
+            // Route the open request to the right fragment
+            // -----------------------------------------------------------------------
+            routeToDocument(file, doc, startLine, startInPreview);
+        }
+    }
+
+    // Route an open request to the right fragment.
+    // Three cases:
+    // 1. An editor is open for the same document - just show the requested line
+    // 2. An editor is open for a different document (or the fragment is not an editor) - launch the new document
+    // 3. No fragment is open - open the document here
+    private void routeToDocument(final File file, final Document doc, final Integer startLine, final Boolean startInPreview) {
+        final GsFragmentBase<?, ?> frag = getCurrentVisibleFragment();
+        if (frag != null) {
+            if (frag instanceof DocumentEditAndViewFragment) {
+                final DocumentEditAndViewFragment editFrag = (DocumentEditAndViewFragment) frag;
+                if (editFrag.getDocument().path.equals(doc.path)) {
+                    if (startLine != null) {
+                        // Same document requested, show the requested line
+                        TextViewUtils.selectLines(editFrag.getEditor(), startLine);
                     }
                 } else {
-                    // Current fragment is not an editor - launch the new document
+                    // Current document is different - launch the new document
                     launch(this, file, startInPreview, startLine);
                 }
             } else {
-                // No fragment open - open the document
-                showFragment(DocumentEditAndViewFragment.newInstance(doc, startLine, startInPreview));
+                // Current fragment is not an editor - launch the new document
+                launch(this, file, startInPreview, startLine);
             }
+        } else {
+            // No fragment open - open the document
+            showFragment(DocumentEditAndViewFragment.newInstance(doc, startLine, startInPreview));
         }
     }
 

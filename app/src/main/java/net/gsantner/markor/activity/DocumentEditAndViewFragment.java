@@ -261,7 +261,21 @@ public class DocumentEditAndViewFragment extends MarkorBaseFragment implements F
             _hlEditor.setSelection(startPos);
         }
 
-        // Restore scroll position for view-mode
+        restoreViewModeScroll();
+
+        _hlEditor.recomputeHighlighting();
+        restoreEditScrollOrCursor(startPos, hasLineNumber);
+
+        // Fade in to hide initial jank
+        _hlEditor.post(() -> _hlEditor.animate().alpha(1).setDuration(250).start());
+        setupHighlightingScrollRestore();
+    }
+
+    // Editor UI state restore (cursor / scroll) - extracted verbatim from
+    // onFragmentFirstTimeVisible to keep the initial-display flow readable.
+
+    // Restore scroll position for view-mode
+    private void restoreViewModeScroll() {
         if (_webView != null) {
             int lastViewHeight = _appSettings.getLastViewHeight(_document.path, 0);
             int lastViewScrollY = _appSettings.getLastViewScrollY(_document.path, 0);
@@ -269,8 +283,10 @@ public class DocumentEditAndViewFragment extends MarkorBaseFragment implements F
                 _verticalScrollView.post(() -> _webView.scrollTo(0, lastViewScrollY));
             }
         }
+    }
 
-        _hlEditor.recomputeHighlighting();
+    // Restore the edit-mode scroll position, or show the cursor at the start position
+    private void restoreEditScrollOrCursor(final int startPos, final boolean hasLineNumber) {
         if (hasLineNumber) {
             TextViewUtils.setSelectionAndShow(_hlEditor, startPos);
         } else {
@@ -285,10 +301,6 @@ public class DocumentEditAndViewFragment extends MarkorBaseFragment implements F
                 }
             });
         }
-
-        // Fade in to hide initial jank
-        _hlEditor.post(() -> _hlEditor.animate().alpha(1).setDuration(250).start());
-        setupHighlightingScrollRestore();
     }
 
     private void setupHighlightingScrollRestore() {
@@ -1139,6 +1151,8 @@ public class DocumentEditAndViewFragment extends MarkorBaseFragment implements F
         return getActivity() instanceof MainActivity;
     }
 
+    // View (preview) mode toggle and rendering
+    // ---------------------------------------------------------
     public void updateViewModeText() {
         if (_webView == null) {
             return;

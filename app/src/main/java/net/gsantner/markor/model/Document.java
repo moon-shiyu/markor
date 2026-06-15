@@ -66,7 +66,8 @@ public class Document implements Serializable {
     int _format = FormatRegistry.FORMAT_UNKNOWN;
     private transient SharedPreferences _modTimePref;
 
-    // Used to check if string changed
+    // Content fingerprint of the last loaded/saved text, used to detect changes
+    // and skip redundant writes. The (length, crc) math lives in DocumentContentDiff.
     private long _lastHash = 0;
     private int _lastLength = -1;
 
@@ -175,12 +176,12 @@ public class Document implements Serializable {
     }
 
     private void setContentHash(final CharSequence s) {
-        _lastLength = s != null ? s.length() : 0;
-        _lastHash = s != null ? GsFileUtils.crc32(s) : 0;
+        _lastLength = DocumentContentDiff.length(s);
+        _lastHash = DocumentContentDiff.crc(s);
     }
 
     public boolean isContentSame(final CharSequence s) {
-        return s != null && s.length() == _lastLength && _lastHash == GsFileUtils.crc32(s);
+        return DocumentContentDiff.isSame(s, _lastLength, _lastHash);
     }
 
     public synchronized @Nullable
