@@ -47,6 +47,21 @@ public class MarkorFileBrowserFactory {
 
         opts.okButtonEnable = opts.doSelectFolder || opts.doSelectMultiple;
 
+        applyStaticViewerOptions(opts, context, cu, appSettings);
+
+        updateFsViewerOpts(opts, context);
+
+        return opts;
+    }
+
+    // Static (non-changing) viewer chrome: button images/text, content descriptions, colors,
+    // file/folder icons, title, mounted storage root and the persisted sort order.
+    private static void applyStaticViewerOptions(
+            final GsFileBrowserOptions.Options opts,
+            final Context context,
+            final MarkorContextUtils cu,
+            final AppSettings appSettings
+    ) {
         opts.searchButtonImage = R.drawable.ic_search_black_24dp;
         opts.newDirButtonImage = R.drawable.baseline_create_new_folder_24;
         opts.homeButtonImage = R.drawable.ic_home_black_24dp;
@@ -71,10 +86,6 @@ public class MarkorFileBrowserFactory {
         opts.titleText = R.string.select;
         opts.mountedStorageFolder = cu.getStorageAccessFolder(context);
         opts.sortOrder = appSettings.getFolderSortOrder(null);
-
-        updateFsViewerOpts(opts, context);
-
-        return opts;
     }
 
     // We update these because some of these settings can change
@@ -88,11 +99,31 @@ public class MarkorFileBrowserFactory {
         opts.descriptionFormat = appSettings.getString(R.string.pref_key__file_description_format, "");
 
         final File downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-        opts.addVirtualFile("Download", downloads, R.drawable.baseline_download_24);
-
         final File notebook = appSettings.getNotebookDirectory();
-        opts.addVirtualFile(context.getString(R.string.notebook), notebook, R.drawable.ic_home_black_24dp);
 
+        applyVirtualEntries(opts, context, downloads, notebook);
+        applyEntryIcons(opts, appSettings, downloads, notebook);
+    }
+
+    // Virtual top-level entries, in display order: Download first, then the Notebook root.
+    private static void applyVirtualEntries(
+            final GsFileBrowserOptions.Options opts,
+            final Context context,
+            final File downloads,
+            final File notebook
+    ) {
+        opts.addVirtualFile("Download", downloads, R.drawable.baseline_download_24);
+        opts.addVirtualFile(context.getString(R.string.notebook), notebook, R.drawable.ic_home_black_24dp);
+    }
+
+    // Icons for the virtual storage groups and well-known files (favourites/recents/popular,
+    // notebook root, downloads, quicknote and todo).
+    private static void applyEntryIcons(
+            final GsFileBrowserOptions.Options opts,
+            final AppSettings appSettings,
+            final File downloads,
+            final File notebook
+    ) {
         opts.iconMaps.put(GsFileBrowserListAdapter.VIRTUAL_STORAGE_FAVOURITE, R.drawable.ic_star_black_24dp);
         opts.iconMaps.put(GsFileBrowserListAdapter.VIRTUAL_STORAGE_RECENTS, R.drawable.ic_history_black_24dp);
         opts.iconMaps.put(GsFileBrowserListAdapter.VIRTUAL_STORAGE_POPULAR, R.drawable.ic_favorite_black_24dp);
