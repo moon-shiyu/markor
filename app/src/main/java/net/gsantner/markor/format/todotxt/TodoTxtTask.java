@@ -9,7 +9,6 @@
 #########################################################*/
 package net.gsantner.markor.format.todotxt;
 
-import android.text.TextUtils;
 import android.widget.TextView;
 
 import net.gsantner.markor.frontend.textview.TextViewUtils;
@@ -27,15 +26,30 @@ import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/**
+ * Model for a single todo.txt task line.
+ * <p>
+ * Parses the raw line lazily into structured fields (priority, done state,
+ * dates, projects, contexts, key:value pairs, description) using the static
+ * regex patterns defined here.
+ * <p>
+ * Also provides static utilities for working with lists of tasks and the
+ * {@link SttTaskSimpleComparator} for sorting.
+ */
 public class TodoTxtTask {
 
-    //
-    // Static memebers
-    //
+    // ---------------------------------------------------------------------------------------
+    // Date format
+    // ---------------------------------------------------------------------------------------
 
     public static final SimpleDateFormat DATEF_YYYY_MM_DD = new SimpleDateFormat("yyyy-MM-dd", Locale.ROOT);
     public static final int DATEF_YYYY_MM_DD_LEN = "yyyy-MM-dd".length();
     public static final String PT_DATE = "\\d{4}-\\d{2}-\\d{2}";
+
+    // ---------------------------------------------------------------------------------------
+    // Regex patterns
+    // ---------------------------------------------------------------------------------------
+
     public static final Pattern PATTERN_PROJECTS = Pattern.compile("(?:^|\\s)(?:\\++)(\\S+)");
     public static final Pattern PATTERN_CONTEXTS = Pattern.compile("(?:^|\\s)(?:\\@+)(\\S+)");
     public static final Pattern PATTERN_DONE = Pattern.compile("(?m)(^[Xx]) (.*)$");
@@ -54,20 +68,31 @@ public class TodoTxtTask {
     public static final Pattern PATTERN_COMPLETION_DATE = Pattern.compile("(?:^|\\n)(?:[Xx] )(" + PT_DATE + ")?");
     public static final Pattern PATTERN_CREATION_DATE = Pattern.compile("(?:^|\\n)(?:\\([A-Za-z]\\)\\s)?(?:[Xx] " + PT_DATE + " )?(" + PT_DATE + ")");
 
+    // ---------------------------------------------------------------------------------------
+    // Constants
+    // ---------------------------------------------------------------------------------------
+
     public static final char PRIORITY_NONE = '~';
 
     public enum TodoDueState {
         NONE, OVERDUE, TODAY, FUTURE
     }
 
+    // ---------------------------------------------------------------------------------------
+    // Static utilities — date
+    // ---------------------------------------------------------------------------------------
+
     public static String getToday() {
         return DATEF_YYYY_MM_DD.format(new Date());
     }
 
+    // ---------------------------------------------------------------------------------------
+    // Static utilities — task list operations
+    // ---------------------------------------------------------------------------------------
+
     public static List<TodoTxtTask> getTasks(final CharSequence text, final int[] sel) {
         final List<TodoTxtTask> tasks = new ArrayList<>();
         if (GsTextUtils.isValidSelection(text, sel)) {
-
             final int[] lsel = TextViewUtils.getLineSelection(text, sel);
             final String[] lines = text.subSequence(lsel[0], lsel[1]).toString().split("\n");
 
@@ -130,9 +155,15 @@ public class TodoTxtTask {
         return builder.toString();
     }
 
-    //
-    // Members
-    //
+    // Sort tasks array and return it. Changes input array.
+    public static List<TodoTxtTask> sortTasks(List<TodoTxtTask> tasks, final String orderBy, final boolean descending) {
+        Collections.sort(tasks, new SttTaskSimpleComparator(orderBy, descending));
+        return tasks;
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Instance — lazy-parsed fields
+    // ---------------------------------------------------------------------------------------
 
     private final String line;
     private List<String> contexts = null;
@@ -162,7 +193,6 @@ public class TodoTxtTask {
 
     public String getDescription() {
         if (description == null) {
-            // The description is what is left when all structured parts of the task are removed
             description = getLine()
                     .replaceAll(PATTERN_COMPLETION_DATE.pattern(), "")
                     .replaceAll(PATTERN_PRIORITY_ANY.pattern(), "")
@@ -242,8 +272,11 @@ public class TodoTxtTask {
         return completionDate;
     }
 
-    // Only captures the first group of each match
-    private static List<String> parseAllMatches(final String text, final Pattern pattern) {
+    // ---------------------------------------------------------------------------------------
+    // Parsing helpers (package-private for testability)
+    // ---------------------------------------------------------------------------------------
+
+    static List<String> parseAllMatches(final String text, final Pattern pattern) {
         List<String> ret = new ArrayList<>();
         for (Matcher m = pattern.matcher(text); m.find(); ) {
             if (m.groupCount() > 0) {
@@ -253,13 +286,13 @@ public class TodoTxtTask {
         return ret;
     }
 
-    private static String parseOneValueOrDefault(final String text, final Pattern pattern, final String defaultValue) {
+    static String parseOneValueOrDefault(final String text, final Pattern pattern, final String defaultValue) {
         return parseOneValueOrDefault(text, pattern, 1, defaultValue);
     }
 
-    private static String parseOneValueOrDefault(final String text, final Pattern pattern, final int group, final String defaultValue) {
+    static String parseOneValueOrDefault(final String text, final Pattern pattern, final int group, final String defaultValue) {
         for (final Matcher m = pattern.matcher(text); m.find(); ) {
-            if (m.groupCount() >= group) {  // Groups are 1-indexed
+            if (m.groupCount() >= group) {
                 return m.group(group);
             }
         }
@@ -270,11 +303,9 @@ public class TodoTxtTask {
         return pattern.matcher(text).find();
     }
 
-    // Sort tasks array and return it. Changes input array.
-    public static List<TodoTxtTask> sortTasks(List<TodoTxtTask> tasks, final String orderBy, final boolean descending) {
-        Collections.sort(tasks, new SttTaskSimpleComparator(orderBy, descending));
-        return tasks;
-    }
+    // ---------------------------------------------------------------------------------------
+    // Sorting
+    // ---------------------------------------------------------------------------------------
 
     public static class SttTaskSimpleComparator implements Comparator<TodoTxtTask> {
         private final String _orderBy;
@@ -295,47 +326,38 @@ public class TodoTxtTask {
 
         @Override
         public int compare(final TodoTxtTask x, final TodoTxtTask y) {
-
-            // Always push done tasks to the bottom. Note ascending is small -> big.
+            // Always push done tasks to the bottom
             final int doneCompare = Integer.compare(x.isDone() ? 1 : 0, y.isDone() ? 1 : 0);
             if (doneCompare != 0) return doneCompare;
 
             int difference;
             switch (_orderBy) {
-                case BY_PRIORITY: {
+                case BY_PRIORITY:
                     difference = compare(x.getPriority(), y.getPriority());
                     break;
-                }
-                case BY_CONTEXT: {
+                case BY_CONTEXT:
                     difference = compare(x.getContexts(), y.getContexts());
                     break;
-                }
-                case BY_PROJECT: {
+                case BY_PROJECT:
                     difference = compare(x.getProjects(), y.getProjects());
                     break;
-                }
-                case BY_CREATION_DATE: {
+                case BY_CREATION_DATE:
                     difference = compare(x.getCreationDate(), y.getCreationDate());
                     break;
-                }
-                case BY_DUE_DATE: {
+                case BY_DUE_DATE:
                     difference = compare(x.getDueDate(), y.getDueDate());
                     break;
-                }
-                case BY_DESCRIPTION: {
+                case BY_DESCRIPTION:
                     difference = compare(x.getDescription(), y.getDescription());
                     break;
-                }
-                case BY_LINE: {
+                case BY_LINE:
                     difference = compare(x.getLine(), y.getLine());
                     break;
-                }
-                default: {
+                default:
                     difference = 0;
-                }
             }
 
-            // Always resolve sorts by due date and then priority
+            // Tiebreakers: due date then priority
             if (difference == 0) {
                 difference = compare(x.getDueDate(), y.getDueDate());
             }
@@ -355,10 +377,6 @@ public class TodoTxtTask {
             return Integer.compare(xi, yi);
         }
 
-        private int compareDone(final TodoTxtTask a, TodoTxtTask b) {
-            return Integer.compare(a.isDone() ? 1 : 0, b.isDone() ? 1 : 0);
-        }
-
         private int compare(final char x, final char y) {
             return compare(Character.toString(x), Character.toString(y));
         }
@@ -368,9 +386,11 @@ public class TodoTxtTask {
         }
 
         private int compare(final List<String> x, final List<String> y) {
-            Collections.sort(x);
-            Collections.sort(y);
-            return compare(TextUtils.join("", x), TextUtils.join("", y));
+            final List<String> xCopy = new ArrayList<>(x);
+            final List<String> yCopy = new ArrayList<>(y);
+            Collections.sort(xCopy);
+            Collections.sort(yCopy);
+            return compare(String.join("", xCopy), String.join("", yCopy));
         }
 
         private int compare(final String x, final String y) {
