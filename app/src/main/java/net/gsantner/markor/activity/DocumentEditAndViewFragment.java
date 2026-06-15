@@ -190,23 +190,7 @@ public class DocumentEditAndViewFragment extends MarkorBaseFragment implements F
 
         // Configure the editor
         // ---------------------------------------------------------
-        _hlEditor.setLineSpacing(0, _appSettings.getEditorLineSpacing());
-        _hlEditor.setTextSize(TypedValue.COMPLEX_UNIT_SP, _appSettings.getDocumentFontSize(_document.path));
-        _hlEditor.setTypeface(GsFontPreferenceCompat.typeface(getContext(), _appSettings.getFontFamily(), Typeface.NORMAL));
-        final int editorBackgroundColor = _appSettings.getEditorBackgroundColor();
-        _hlEditor.setBackgroundColor(editorBackgroundColor);
-        _editorHolder.setBackgroundColor(editorBackgroundColor);
-        _hlEditor.setTextColor(_appSettings.getEditorForegroundColor());
-        _hlEditor.setGravity(_appSettings.isEditorStartEditingInCenter() ? Gravity.CENTER : Gravity.NO_GRAVITY);
-        _hlEditor.setHighlightingEnabled(_appSettings.getDocumentHighlightState(_document.path, _hlEditor.getText()));
-        _hlEditor.setAutoFormatEnabled(_appSettings.getDocumentAutoFormatEnabled(_document.path));
-        _hlEditor.setSaveInstanceState(false); // We will reload from disk
-        _hlEditor.setOverScrollMode(View.OVER_SCROLL_ALWAYS);
-        _hlEditor.setStaticCursorEnabled(_appSettings.isStaticCursorEnabled());
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            // Do not need to send contents to accessibility
-            _hlEditor.setImportantForAccessibility(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
-        }
+        configureEditor();
 
         // Various settings
         setWrapState(isDisplayedAtMainActivity() || _appSettings.getDocumentWrapState(_document.path));
@@ -250,27 +234,54 @@ public class DocumentEditAndViewFragment extends MarkorBaseFragment implements F
     @Override
     protected void onFragmentFirstTimeVisible() {
         final Bundle args = getArguments();
+        final int startPos = resolveCursorPosition(args);
+
+        restoreViewModeScrollPosition();
+
+        _hlEditor.recomputeHighlighting();
+        restoreEditorScrollPosition(args, startPos);
+
+        // Fade in to hide initial jank
+        _hlEditor.post(() -> _hlEditor.animate().alpha(1).setDuration(250).start());
+        setupHighlightingScrollRestore();
+    }
+
+    /**
+     * Resolve the initial cursor position.
+     * <ul>
+     *   <li>If a line number was supplied via EXTRA_FILE_LINE_NUMBER,
+     *       map it to a character index ({@code -1} → end of text).</li>
+     *   <li>Otherwise, restore the last saved edit position.</li>
+     * </ul>
+     */
+    private int resolveCursorPosition(final Bundle args) {
         final boolean hasLineNumber = args != null && args.containsKey(Document.EXTRA_FILE_LINE_NUMBER);
-        int startPos = _appSettings.getLastEditPosition(_document.path, _hlEditor.length());
+        final int savedPos = _appSettings.getLastEditPosition(_document.path, _hlEditor.length());
         if (hasLineNumber) {
             final int lineNumber = args.getInt(Document.EXTRA_FILE_LINE_NUMBER);
-            startPos = lineNumber >= 0
+            return lineNumber >= 0
                     ? TextViewUtils.getIndexFromLineOffset(_hlEditor.getText(), lineNumber, 0)
                     : _hlEditor.length();
         } else {
-            _hlEditor.setSelection(startPos);
+            _hlEditor.setSelection(savedPos);
+            return savedPos;
         }
+    }
 
-        // Restore scroll position for view-mode
+    /** Restore scroll position for the WebView (preview mode). */
+    private void restoreViewModeScrollPosition() {
         if (_webView != null) {
-            int lastViewHeight = _appSettings.getLastViewHeight(_document.path, 0);
-            int lastViewScrollY = _appSettings.getLastViewScrollY(_document.path, 0);
+            final int lastViewHeight = _appSettings.getLastViewHeight(_document.path, 0);
+            final int lastViewScrollY = _appSettings.getLastViewScrollY(_document.path, 0);
             if (lastViewScrollY > 0 && lastViewHeight == _webView.getHeight()) {
                 _verticalScrollView.post(() -> _webView.scrollTo(0, lastViewScrollY));
             }
         }
+    }
 
-        _hlEditor.recomputeHighlighting();
+    /** Restore scroll position for the editor, or scroll to the cursor if no saved position. */
+    private void restoreEditorScrollPosition(final Bundle args, final int startPos) {
+        final boolean hasLineNumber = args != null && args.containsKey(Document.EXTRA_FILE_LINE_NUMBER);
         if (hasLineNumber) {
             TextViewUtils.setSelectionAndShow(_hlEditor, startPos);
         } else {
@@ -285,10 +296,6 @@ public class DocumentEditAndViewFragment extends MarkorBaseFragment implements F
                 }
             });
         }
-
-        // Fade in to hide initial jank
-        _hlEditor.post(() -> _hlEditor.animate().alpha(1).setDuration(250).start());
-        setupHighlightingScrollRestore();
     }
 
     private void setupHighlightingScrollRestore() {
@@ -306,6 +313,30 @@ public class DocumentEditAndViewFragment extends MarkorBaseFragment implements F
                     }
                 }
         );
+    }
+
+    /**
+     * Apply the user's editor preferences (font, colors, spacing, flags)
+     * to the highlighting editor. Called once from {@link #onViewCreated}.
+     */
+    private void configureEditor() {
+        _hlEditor.setLineSpacing(0, _appSettings.getEditorLineSpacing());
+        _hlEditor.setTextSize(TypedValue.COMPLEX_UNIT_SP, _appSettings.getDocumentFontSize(_document.path));
+        _hlEditor.setTypeface(GsFontPreferenceCompat.typeface(getContext(), _appSettings.getFontFamily(), Typeface.NORMAL));
+        final int editorBackgroundColor = _appSettings.getEditorBackgroundColor();
+        _hlEditor.setBackgroundColor(editorBackgroundColor);
+        _editorHolder.setBackgroundColor(editorBackgroundColor);
+        _hlEditor.setTextColor(_appSettings.getEditorForegroundColor());
+        _hlEditor.setGravity(_appSettings.isEditorStartEditingInCenter() ? Gravity.CENTER : Gravity.NO_GRAVITY);
+        _hlEditor.setHighlightingEnabled(_appSettings.getDocumentHighlightState(_document.path, _hlEditor.getText()));
+        _hlEditor.setAutoFormatEnabled(_appSettings.getDocumentAutoFormatEnabled(_document.path));
+        _hlEditor.setSaveInstanceState(false); // We will reload from disk
+        _hlEditor.setOverScrollMode(View.OVER_SCROLL_ALWAYS);
+        _hlEditor.setStaticCursorEnabled(_appSettings.isStaticCursorEnabled());
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // Do not need to send contents to accessibility
+            _hlEditor.setImportantForAccessibility(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
+        }
     }
 
     @Override

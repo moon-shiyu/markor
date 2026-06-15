@@ -31,7 +31,6 @@ import net.gsantner.markor.frontend.textview.TextViewUtils;
 import net.gsantner.markor.model.AppSettings;
 import net.gsantner.markor.model.Document;
 import net.gsantner.markor.util.MarkorContextUtils;
-import net.gsantner.opoc.format.GsTextUtils;
 import net.gsantner.opoc.frontend.base.GsFragmentBase;
 import net.gsantner.opoc.util.GsContextUtils;
 import net.gsantner.opoc.util.GsFileUtils;
@@ -155,80 +154,105 @@ public class DocumentActivity extends MarkorBaseActivity {
         handleLaunchingIntent(intent);
     }
 
+    /**
+     * Parse the incoming intent into a {@link LaunchConfig} value object.
+     * All intent-reading decisions are concentrated here so that the rest
+     * of the launch flow operates on plain values.
+     */
+    private LaunchConfig resolveLaunchConfig(final Intent intent) {
+        if (intent == null) {
+            return new LaunchConfig(null, null, null, LaunchConfig.Action.UNSUPPORTED);
+        }
+
+        final String intentAction = intent.getAction();
+
+        // SEND / PROCESS_TEXT → share-into flow
+        if (isSendAction(intentAction)) {
+            return new LaunchConfig(null, null, null, LaunchConfig.Action.SHARE_INTO);
+        }
+        if (isProcessTextAction(intent, intentAction)) {
+            intent.putExtra(Intent.EXTRA_TEXT, intent.getStringExtra("android.intent.extra.PROCESS_TEXT"));
+            return new LaunchConfig(null, null, null, LaunchConfig.Action.SHARE_INTO);
+        }
+
+        // Resolve the target file
+        final File file = MarkorContextUtils.getIntentFile(intent, this);
+        if (file == null || !_cu.canWriteFile(this, file, false, true)) {
+            return new LaunchConfig(null, null, null, LaunchConfig.Action.UNSUPPORTED);
+        }
+
+        // Resolve line number: EXTRA_FILE_LINE_NUMBER takes priority over URI ?line=
+        final Integer lineNumber;
+        if (intent.hasExtra(Document.EXTRA_FILE_LINE_NUMBER)) {
+            lineNumber = intent.getIntExtra(Document.EXTRA_FILE_LINE_NUMBER, -1);
+        } else {
+            final Uri data = intent.getData();
+            final String lineQuery = data != null ? data.getQueryParameter("line") : null;
+            lineNumber = LaunchConfig.resolveLineNumber(null, lineQuery);
+        }
+
+        // Resolve preview mode: EXTRA_DO_PREVIEW or index.* filename
+        final boolean explicitPreview = intent.getBooleanExtra(Document.EXTRA_DO_PREVIEW, false);
+        final Boolean previewMode = LaunchConfig.shouldStartInPreview(explicitPreview, file.getName()) ? true : null;
+
+        return new LaunchConfig(file, lineNumber, previewMode, LaunchConfig.Action.OPEN_DOCUMENT);
+    }
+
+    private static boolean isSendAction(final String intentAction) {
+        return Intent.ACTION_SEND.equals(intentAction)
+                || Intent.ACTION_SEND_MULTIPLE.equals(intentAction);
+    }
+
+    private static boolean isProcessTextAction(final Intent intent, final String intentAction) {
+        return Intent.ACTION_PROCESS_TEXT.equals(intentAction)
+                && intent.hasExtra(Intent.EXTRA_PROCESS_TEXT);
+    }
+
     private void handleLaunchingIntent(final Intent intent) {
         if (intent == null) return;
 
-        final String intentAction = intent.getAction();
-        final Uri intentData = intent.getData();
+        final LaunchConfig config = resolveLaunchConfig(intent);
 
-        // Pull the file from the intent
-        // -----------------------------------------------------------------------
-        final File file = MarkorContextUtils.getIntentFile(intent, this);
-
-        final boolean intentIsView = Intent.ACTION_VIEW.equals(intentAction);
-        final boolean intentIsSend = Intent.ACTION_SEND.equals(intentAction) || Intent.ACTION_SEND_MULTIPLE.equals(intentAction);
-        final boolean intentIsEdit = Intent.ACTION_EDIT.equals(intentAction);
-
-        if (intentIsSend) {
-            showShareInto(intent);
-            return;
-        } else if (Intent.ACTION_PROCESS_TEXT.equals(intentAction) && intent.hasExtra(Intent.EXTRA_PROCESS_TEXT)) {
-            intent.putExtra(Intent.EXTRA_TEXT, intent.getStringExtra("android.intent.extra.PROCESS_TEXT"));
+        if (config.action == LaunchConfig.Action.SHARE_INTO) {
             showShareInto(intent);
             return;
         }
 
-        // Decide what to do with the file
-        // -----------------------------------------------------------------------
-        if (file == null || !_cu.canWriteFile(this, file, false, true)) {
+        if (config.action == LaunchConfig.Action.UNSUPPORTED) {
             showNotSupportedMessage();
-        } else {
-            Integer startLine = null;
-            // Open in editor/viewer
-            final Document doc = new Document(file);
-            if (intent.hasExtra(Document.EXTRA_FILE_LINE_NUMBER)) {
-                startLine = intent.getIntExtra(Document.EXTRA_FILE_LINE_NUMBER, -1);
-            } else if (intentData != null) {
-                final String line = intentData.getQueryParameter("line");
-                if (line != null) {
-                    startLine = GsTextUtils.tryParseInt(line, -1);
-                }
-            }
+            return;
+        }
 
-            // Start in a specific mode if required. Otherwise let the fragment decide
-            Boolean startInPreview = null;
-            if (intent.getBooleanExtra(Document.EXTRA_DO_PREVIEW, false) ||
-                    file.getName().startsWith("index.")
-            ) {
-                startInPreview = true;
-            }
+        // Action is OPEN_DOCUMENT
+        final Document doc = new Document(config.file);
+        final GsFragmentBase<?, ?> frag = getCurrentVisibleFragment();
 
-            // Three cases
-            // 1. We have an editor open and it is the same document - show the requested line
-            // 2. We have an editor open and it is a different document - open the new document
-            // 3. We do not have a current fragment - open the document here
-            final GsFragmentBase<?, ?> frag = getCurrentVisibleFragment();
-            if (frag != null) {
-                if (frag instanceof DocumentEditAndViewFragment) {
-                    final DocumentEditAndViewFragment editFrag = (DocumentEditAndViewFragment) frag;
-                    if (editFrag.getDocument().path.equals(doc.path)) {
-                        if (startLine != null) {
-                            // Same document requested, show the requested line
-                            TextViewUtils.selectLines(editFrag.getEditor(), startLine);
-                        }
-                    } else {
-                        // Current document is different - launch the new document
-                        launch(this, file, startInPreview, startLine);
-                    }
-                } else {
-                    // Current fragment is not an editor - launch the new document
-                    launch(this, file, startInPreview, startLine);
+        if (frag instanceof DocumentEditAndViewFragment) {
+            final DocumentEditAndViewFragment editFrag = (DocumentEditAndViewFragment) frag;
+            if (editFrag.getDocument().path.equals(doc.path)) {
+                // Same document — navigate to the requested line if specified
+                if (config.lineNumber != null) {
+                    navigateToLineInCurrentDocument(editFrag, config.lineNumber);
                 }
             } else {
-                // No fragment open - open the document
-                showFragment(DocumentEditAndViewFragment.newInstance(doc, startLine, startInPreview));
+                // Different document — launch in a new instance
+                launchNewDocument(config);
             }
+        } else if (frag != null) {
+            // Current fragment is not an editor — launch the new document
+            launchNewDocument(config);
+        } else {
+            // No fragment open — open the document here
+            showFragment(DocumentEditAndViewFragment.newInstance(doc, config.lineNumber, config.previewMode));
         }
+    }
+
+    private void navigateToLineInCurrentDocument(final DocumentEditAndViewFragment editFrag, final int lineNumber) {
+        TextViewUtils.selectLines(editFrag.getEditor(), lineNumber);
+    }
+
+    private void launchNewDocument(final LaunchConfig config) {
+        launch(this, config.file, config.previewMode, config.lineNumber);
     }
 
     private boolean isDocumentAlreadyOpen(final Document doc) {
