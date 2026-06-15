@@ -79,32 +79,141 @@ public class FormatRegistry {
     // File extensions that are known not to be supported by Markor
     private static final List<String> EXTERNAL_FILE_EXTENSIONS = Collections.singletonList(".pdf");
 
+    // -----------------------------------------------------------------------------------------
+    // Component factory interfaces
+    // -----------------------------------------------------------------------------------------
+
+    @FunctionalInterface
+    public interface HighlighterFactory {
+        SyntaxHighlighterBase create(AppSettings appSettings, Document document);
+    }
+
+    @FunctionalInterface
+    public interface ActionButtonsFactory {
+        ActionButtonBase create(Context context, Document document);
+    }
+
+    @FunctionalInterface
+    public interface InputFilterFactory {
+        InputFilter create();
+    }
+
+    @FunctionalInterface
+    public interface TextWatcherFactory {
+        TextWatcher create();
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Format definition — combines metadata with component factories
+    // -----------------------------------------------------------------------------------------
+
     public static class Format {
         public final @StringRes int format, name;
         public final String defaultExtensionWithDot;
         public final TextConverterBase converter;
+        public final HighlighterFactory highlighterFactory;
+        public final ActionButtonsFactory actionButtonsFactory;
+        public final InputFilterFactory inputFilterFactory;
+        public final TextWatcherFactory textWatcherFactory;
 
-        public Format(@StringRes final int a_format, @StringRes final int a_name, final String a_defaultFileExtension, final TextConverterBase a_converter) {
+        public Format(@StringRes final int a_format, @StringRes final int a_name,
+                      final String a_defaultFileExtension, final TextConverterBase a_converter,
+                      final HighlighterFactory a_highlighterFactory,
+                      final ActionButtonsFactory a_actionButtonsFactory,
+                      final InputFilterFactory a_inputFilterFactory,
+                      final TextWatcherFactory a_textWatcherFactory) {
             format = a_format;
             name = a_name;
             defaultExtensionWithDot = a_defaultFileExtension;
             converter = a_converter;
+            highlighterFactory = a_highlighterFactory;
+            actionButtonsFactory = a_actionButtonsFactory;
+            inputFilterFactory = a_inputFilterFactory;
+            textWatcherFactory = a_textWatcherFactory;
+        }
+
+        /** Backward-compatible constructor for metadata-only usage. */
+        public Format(@StringRes final int a_format, @StringRes final int a_name,
+                      final String a_defaultFileExtension, final TextConverterBase a_converter) {
+            this(a_format, a_name, a_defaultFileExtension, a_converter, null, null, null, null);
         }
     }
 
-    // Order here is used to **determine** format by it's file extension and/or content heading
+    // Order here is used to **determine** format by its file extension and/or content heading.
+    // Each entry carries both metadata and component factories so that adding a new format
+    // requires only appending to this list — no separate switch statement to maintain.
     public static final List<Format> FORMATS = Arrays.asList(
-            new Format(FormatRegistry.FORMAT_MARKDOWN, R.string.markdown, ".md", CONVERTER_MARKDOWN),
-            new Format(FormatRegistry.FORMAT_TODOTXT, R.string.todo_txt, ".todo.txt", CONVERTER_TODOTXT),
-            new Format(FormatRegistry.FORMAT_CSV, R.string.csv, ".csv", CONVERTER_CSV),
-            new Format(FormatRegistry.FORMAT_WIKITEXT, R.string.wikitext, ".txt", CONVERTER_WIKITEXT),
-            new Format(FormatRegistry.FORMAT_KEYVALUE, R.string.key_value, ".json", CONVERTER_KEYVALUE),
-            new Format(FormatRegistry.FORMAT_ASCIIDOC, R.string.asciidoc, ".adoc", CONVERTER_ASCIIDOC),
-            new Format(FormatRegistry.FORMAT_ORGMODE, R.string.orgmode, ".org", CONVERTER_ORGMODE),
-            new Format(FormatRegistry.FORMAT_EMBEDBINARY, R.string.embed_binary, ".jpg", CONVERTER_EMBEDBINARY),
-            new Format(FormatRegistry.FORMAT_PLAIN, R.string.plaintext, ".txt", CONVERTER_PLAINTEXT),
-            new Format(FormatRegistry.FORMAT_UNKNOWN, R.string.none, "", null)
+            new Format(FORMAT_MARKDOWN, R.string.markdown, ".md", CONVERTER_MARKDOWN,
+                    (as, d) -> new MarkdownSyntaxHighlighter(as),
+                    (c, d) -> new MarkdownActionButtons(c, d),
+                    () -> new AutoTextFormatter(MarkdownReplacePatternGenerator.formatPatterns),
+                    () -> new ListHandler(MarkdownReplacePatternGenerator.formatPatterns)),
+
+            new Format(FORMAT_TODOTXT, R.string.todo_txt, ".todo.txt", CONVERTER_TODOTXT,
+                    (as, d) -> new TodoTxtSyntaxHighlighter(as),
+                    (c, d) -> new TodoTxtActionButtons(c, d),
+                    () -> new TodoTxtAutoTextFormatter(),
+                    null),
+
+            new Format(FORMAT_CSV, R.string.csv, ".csv", CONVERTER_CSV,
+                    (as, d) -> new CsvSyntaxHighlighter(as),
+                    (c, d) -> new PlaintextActionButtons(c, d),
+                    () -> new AutoTextFormatter(MarkdownReplacePatternGenerator.formatPatterns),
+                    () -> new ListHandler(MarkdownReplacePatternGenerator.formatPatterns)),
+
+            new Format(FORMAT_WIKITEXT, R.string.wikitext, ".txt", CONVERTER_WIKITEXT,
+                    (as, d) -> new WikitextSyntaxHighlighter(as),
+                    (c, d) -> new WikitextActionButtons(c, d),
+                    () -> new AutoTextFormatter(WikitextReplacePatternGenerator.formatPatterns),
+                    () -> new ListHandler(WikitextReplacePatternGenerator.formatPatterns)),
+
+            new Format(FORMAT_KEYVALUE, R.string.key_value, ".json", CONVERTER_KEYVALUE,
+                    (as, d) -> new KeyValueSyntaxHighlighter(as),
+                    (c, d) -> new PlaintextActionButtons(c, d),
+                    null,
+                    null),
+
+            new Format(FORMAT_ASCIIDOC, R.string.asciidoc, ".adoc", CONVERTER_ASCIIDOC,
+                    (as, d) -> new AsciidocSyntaxHighlighter(as),
+                    (c, d) -> new AsciidocActionButtons(c, d),
+                    () -> new AutoTextFormatter(MarkdownReplacePatternGenerator.formatPatterns),
+                    () -> new ListHandler(MarkdownReplacePatternGenerator.formatPatterns)),
+
+            new Format(FORMAT_ORGMODE, R.string.orgmode, ".org", CONVERTER_ORGMODE,
+                    (as, d) -> new OrgmodeSyntaxHighlighter(as),
+                    (c, d) -> new OrgmodeActionButtons(c, d),
+                    () -> new AutoTextFormatter(OrgmodeReplacePatternGenerator.formatPatterns),
+                    () -> new ListHandler(OrgmodeReplacePatternGenerator.formatPatterns)),
+
+            new Format(FORMAT_EMBEDBINARY, R.string.embed_binary, ".jpg", CONVERTER_EMBEDBINARY,
+                    (as, d) -> new PlaintextSyntaxHighlighter(as),
+                    (c, d) -> new PlaintextActionButtons(c, d),
+                    null,
+                    null),
+
+            new Format(FORMAT_PLAIN, R.string.plaintext, ".txt", CONVERTER_PLAINTEXT,
+                    (as, d) -> new PlaintextSyntaxHighlighter(as, d.extension),
+                    (c, d) -> new PlaintextActionButtons(c, d),
+                    () -> new AutoTextFormatter(MarkdownReplacePatternGenerator.formatPatterns),
+                    () -> new ListHandler(MarkdownReplacePatternGenerator.formatPatterns)),
+
+            new Format(FORMAT_UNKNOWN, R.string.none, "", null)
     );
+
+    /**
+     * Look up a {@link Format} entry by its format ID.
+     *
+     * @param formatId one of the FORMAT_* constants
+     * @return the matching Format, or {@code null} if not found
+     */
+    public static Format findFormat(final int formatId) {
+        for (final Format f : FORMATS) {
+            if (f.format == formatId) {
+                return f;
+            }
+        }
+        return null;
+    }
 
     public static boolean isFileSupported(final File file, final boolean... textOnly) {
         final boolean textonly = textOnly != null && textOnly.length > 0 && textOnly[0];
@@ -129,81 +238,23 @@ public class FormatRegistry {
         final FormatRegistry format = new FormatRegistry();
         final AppSettings appSettings = AppSettings.get(context);
 
-        switch (formatId) {
-            case FORMAT_CSV: {
-                format._converter = CONVERTER_CSV;
-                format._highlighter = new CsvSyntaxHighlighter(appSettings);
-
-                // TODO k3b ????
-                format._textActions = new PlaintextActionButtons(context, document);
-                format._autoFormatInputFilter = new AutoTextFormatter(MarkdownReplacePatternGenerator.formatPatterns);
-                format._autoFormatTextWatcher = new ListHandler(MarkdownReplacePatternGenerator.formatPatterns);
-                break;
-            }
-            case FORMAT_PLAIN: {
-                format._converter = CONVERTER_PLAINTEXT;
-                format._highlighter = new PlaintextSyntaxHighlighter(appSettings, document.extension);
-                // Should implement code action buttons for PlaintextActionButtons
-                format._textActions = new PlaintextActionButtons(context, document);
-                format._autoFormatInputFilter = new AutoTextFormatter(MarkdownReplacePatternGenerator.formatPatterns);
-                format._autoFormatTextWatcher = new ListHandler(MarkdownReplacePatternGenerator.formatPatterns);
-                break;
-            }
-            case FORMAT_ASCIIDOC: {
-                format._converter = CONVERTER_ASCIIDOC;
-                format._highlighter = new AsciidocSyntaxHighlighter(appSettings);
-                format._textActions = new AsciidocActionButtons(context, document);
-                format._autoFormatInputFilter = new AutoTextFormatter(MarkdownReplacePatternGenerator.formatPatterns);
-                format._autoFormatTextWatcher = new ListHandler(MarkdownReplacePatternGenerator.formatPatterns);
-                break;
-            }
-            case FORMAT_TODOTXT: {
-                format._converter = CONVERTER_TODOTXT;
-                format._highlighter = new TodoTxtSyntaxHighlighter(appSettings);
-                format._textActions = new TodoTxtActionButtons(context, document);
-                format._autoFormatInputFilter = new TodoTxtAutoTextFormatter();
-                break;
-            }
-            case FORMAT_KEYVALUE: {
-                format._converter = CONVERTER_KEYVALUE;
-                format._highlighter = new KeyValueSyntaxHighlighter(appSettings);
-                format._textActions = new PlaintextActionButtons(context, document);
-                break;
-            }
-            case FORMAT_WIKITEXT: {
-                format._converter = CONVERTER_WIKITEXT;
-                format._highlighter = new WikitextSyntaxHighlighter(appSettings);
-                format._textActions = new WikitextActionButtons(context, document);
-                format._autoFormatInputFilter = new AutoTextFormatter(WikitextReplacePatternGenerator.formatPatterns);
-                format._autoFormatTextWatcher = new ListHandler(WikitextReplacePatternGenerator.formatPatterns);
-                break;
-            }
-            case FORMAT_EMBEDBINARY: {
-                format._converter = CONVERTER_EMBEDBINARY;
-                format._highlighter = new PlaintextSyntaxHighlighter(appSettings);
-                format._textActions = new PlaintextActionButtons(context, document);
-                break;
-            }
-            case FORMAT_ORGMODE: {
-                format._converter = CONVERTER_ORGMODE;
-                format._highlighter = new OrgmodeSyntaxHighlighter(appSettings);
-                format._textActions = new OrgmodeActionButtons(context, document);
-                format._autoFormatInputFilter = new AutoTextFormatter(OrgmodeReplacePatternGenerator.formatPatterns);
-                format._autoFormatTextWatcher = new ListHandler(OrgmodeReplacePatternGenerator.formatPatterns);
-                break;
-            }
-            default:
-            case FORMAT_MARKDOWN: {
-                formatId = FORMAT_MARKDOWN;
-                format._converter = CONVERTER_MARKDOWN;
-                format._highlighter = new MarkdownSyntaxHighlighter(appSettings);
-                format._textActions = new MarkdownActionButtons(context, document);
-                format._autoFormatInputFilter = new AutoTextFormatter(MarkdownReplacePatternGenerator.formatPatterns);
-                format._autoFormatTextWatcher = new ListHandler(MarkdownReplacePatternGenerator.formatPatterns);
-                break;
-            }
+        Format def = findFormat(formatId);
+        if (def == null) {
+            formatId = FORMAT_MARKDOWN;
+            def = findFormat(FORMAT_MARKDOWN);
         }
+
         format._formatId = formatId;
+        format._converter = def.converter;
+        format._highlighter = def.highlighterFactory != null
+                ? def.highlighterFactory.create(appSettings, document) : null;
+        format._textActions = def.actionButtonsFactory != null
+                ? def.actionButtonsFactory.create(context, document) : null;
+        format._autoFormatInputFilter = def.inputFilterFactory != null
+                ? def.inputFilterFactory.create() : null;
+        format._autoFormatTextWatcher = def.textWatcherFactory != null
+                ? def.textWatcherFactory.create() : null;
+
         return format;
     }
 
